@@ -268,6 +268,28 @@ footer{background:var(--ink);padding:48px 2rem 28px}
         <div class="rtitle" id="rtitle">Video ready for download</div>
         <div class="rmeta"><span id="rdur">⏱ --:--</span><span style="color:var(--green)">✓ Ready to save</span></div>
         <div class="fmts" id="fmts"></div>
+
+        <!-- DOWNLOAD PROGRESS -->
+        <div id="dlProgress" style="display:none;margin-top:14px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:7px">
+            <span id="dlLabel" style="font-size:.78rem;font-weight:600;color:rgba(255,255,255,.8)">Preparing download…</span>
+            <span id="dlTimer" style="font-size:.78rem;font-weight:700;color:var(--green);min-width:36px;text-align:right">0s</span>
+          </div>
+          <div style="background:rgba(255,255,255,.1);border-radius:999px;height:6px;overflow:hidden">
+            <div id="dlBar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--blue),var(--green));border-radius:999px;transition:width .4s ease"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-top:6px">
+            <span id="dlStatus" style="font-size:.7rem;color:rgba(255,255,255,.4)">Connecting to server…</span>
+            <span id="dlPct" style="font-size:.7rem;color:rgba(255,255,255,.4)">0%</span>
+          </div>
+        </div>
+
+        <!-- DOWNLOAD DONE -->
+        <div id="dlDone" style="display:none;margin-top:12px;background:rgba(0,196,140,.1);border:1px solid rgba(0,196,140,.25);border-radius:9px;padding:10px 14px;display:none;align-items:center;gap:8px">
+          <span style="font-size:1rem">✅</span>
+          <span style="font-size:.8rem;font-weight:600;color:var(--green)" id="dlDoneText">Download started! Check your downloads folder.</span>
+        </div>
+
       </div>
     </div>
   </div>
@@ -446,7 +468,26 @@ async function handleDownload(){
     if(data.thumbnail){ document.getElementById('rthumb').innerHTML=`<img src="${data.thumbnail}" alt="thumb"/>`; }
     if(data.duration){ const m=Math.floor(data.duration/60),s=data.duration%60; document.getElementById('rdur').textContent=`⏱ ${m}:${String(s).padStart(2,'0')}`; }
     const fmts=document.getElementById('fmts'); fmts.innerHTML='';
-    (data.formats||[]).forEach(f=>{ const b=document.createElement('button'); b.className='fbtn'; b.textContent=f.label; b.onclick=()=>dlFile(url,f.format_id,f.label); fmts.appendChild(b); });
+    let hasAudioLabel=false;
+    const vLabel=document.createElement('div');
+    vLabel.style.cssText='width:100%;font-size:.68rem;font-weight:700;color:rgba(255,255,255,.35);text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px;margin-top:2px';
+    vLabel.textContent='🎬 Video formats';
+    fmts.appendChild(vLabel);
+    (data.formats||[]).forEach(f=>{
+      if(f.type==='audio' && !hasAudioLabel){
+        hasAudioLabel=true;
+        const aLabel=document.createElement('div');
+        aLabel.style.cssText='width:100%;font-size:.68rem;font-weight:700;color:rgba(0,196,140,.7);text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px;margin-top:12px';
+        aLabel.textContent='🎵 Audio only (MP3)';
+        fmts.appendChild(aLabel);
+      }
+      const b=document.createElement('button');
+      b.className='fbtn';
+      if(f.type==='audio') b.style.cssText='background:rgba(0,196,140,.12);border-color:rgba(0,196,140,.3);color:rgba(255,255,255,.9)';
+      b.textContent=f.label;
+      b.onclick=()=>dlFile(url,f.format_id,f.label);
+      fmts.appendChild(b);
+    });
     ra.style.display='block';
   }catch(e){
     sb.style.display='none';
@@ -455,9 +496,107 @@ async function handleDownload(){
   }
 }
 function dlFile(url,fid,label){
-  const a=document.createElement('a');
-  a.href=`/api/download?url=${encodeURIComponent(url)}&format_id=${encodeURIComponent(fid)}`;
-  a.download=label; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  const prog=document.getElementById('dlProgress');
+  const done=document.getElementById('dlDone');
+  const bar=document.getElementById('dlBar');
+  const timerEl=document.getElementById('dlTimer');
+  const statusEl=document.getElementById('dlStatus');
+  const pctEl=document.getElementById('dlPct');
+  const labelEl=document.getElementById('dlLabel');
+
+  // Reset
+  done.style.display='none';
+  prog.style.display='block';
+  bar.style.width='0%';
+  bar.style.transition='width 1s ease';
+  labelEl.textContent='⬇️ Downloading: '+label;
+  statusEl.textContent='Connecting to server…';
+  pctEl.textContent='0%';
+
+  // Disable all format buttons while downloading
+  document.querySelectorAll('.fbtn').forEach(b=>{ b.disabled=true; b.style.opacity='0.5'; });
+
+  // Live timer
+  let secs=0;
+  timerEl.textContent='0s';
+  const ticker=setInterval(()=>{ secs++; timerEl.textContent=secs+'s'; },1000);
+
+  // Progress animation phases — realistic for server-side download
+  const phases=[
+    {pct:8, status:'🔗 Connecting to server…',       delay:300},
+    {pct:20,status:'🔍 Fetching video info…',         delay:1500},
+    {pct:38,status:'🎬 Processing video stream…',     delay:3500},
+    {pct:55,status:'🔊 Merging audio & video…',       delay:6000},
+    {pct:72,status:'📦 Packaging your file…',         delay:10000},
+    {pct:88,status:'⚡ Almost ready…',                delay:16000},
+    {pct:94,status:'🚀 Sending file to browser…',     delay:22000},
+  ];
+  phases.forEach(p=>{
+    setTimeout(()=>{
+      bar.style.width=p.pct+'%';
+      pctEl.textContent=p.pct+'%';
+      statusEl.textContent=p.status;
+    },p.delay);
+  });
+
+  // Use XMLHttpRequest so we detect when server actually responds
+  const xhr=new XMLHttpRequest();
+  xhr.open('GET',`/api/download?url=${encodeURIComponent(url)}&format_id=${encodeURIComponent(fid)}`,true);
+  xhr.responseType='blob';
+
+  xhr.onprogress=function(e){
+    if(e.lengthComputable){
+      const pct=Math.round((e.loaded/e.total)*100);
+      bar.style.width=pct+'%';
+      pctEl.textContent=pct+'%';
+      const mb=(e.loaded/1024/1024).toFixed(1);
+      statusEl.textContent=`📥 Downloading… ${mb} MB`;
+    }
+  };
+
+  xhr.onload=function(){
+    clearInterval(ticker);
+    if(xhr.status===200){
+      // Complete bar
+      bar.style.width='100%';
+      pctEl.textContent='100%';
+      statusEl.textContent='✅ Done!';
+      timerEl.textContent=secs+'s';
+
+      // Trigger browser save
+      const blob=xhr.response;
+      const dlUrl=URL.createObjectURL(blob);
+      const a=document.createElement('a');
+      a.href=dlUrl;
+      a.download=label.replace(/[^a-z0-9\s\-\.]/gi,'_')+'.mp4';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(dlUrl);
+
+      setTimeout(()=>{
+        prog.style.display='none';
+        done.style.display='flex';
+        document.getElementById('dlDoneText').textContent='✅ '+label+' saved! Check your Downloads folder.';
+        document.querySelectorAll('.fbtn').forEach(b=>{ b.disabled=false; b.style.opacity='1'; });
+      },800);
+    } else {
+      bar.style.background='#ff4444';
+      statusEl.textContent='❌ Download failed. Please try again.';
+      pctEl.textContent='';
+      document.querySelectorAll('.fbtn').forEach(b=>{ b.disabled=false; b.style.opacity='1'; });
+    }
+  };
+
+  xhr.onerror=function(){
+    clearInterval(ticker);
+    bar.style.background='#ff4444';
+    statusEl.textContent='❌ Connection error. Please try again.';
+    pctEl.textContent='';
+    document.querySelectorAll('.fbtn').forEach(b=>{ b.disabled=false; b.style.opacity='1'; });
+  };
+
+  xhr.send();
 }
 </script>
 </body>
