@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_file, Response
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import yt_dlp
 import os
@@ -10,6 +10,21 @@ CORS(app)
 
 DOWNLOAD_DIR = tempfile.gettempdir()
 FFMPEG_PATH = shutil.which('ffmpeg')
+
+# yt-dlp options to bypass YouTube bot detection
+YDL_BASE = {
+    'quiet': True,
+    'no_warnings': True,
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['android', 'web'],
+            'player_skip': ['webpage', 'configs'],
+        }
+    },
+    'http_headers': {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.91 Mobile Safari/537.36',
+    },
+}
 
 @app.route('/')
 def index():
@@ -40,8 +55,7 @@ def get_info():
         return jsonify({'error': 'No URL provided'}), 400
 
     ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
+        **YDL_BASE,
         'skip_download': True,
     }
     if FFMPEG_PATH:
@@ -54,41 +68,32 @@ def get_info():
         formats = []
         seen = set()
 
-        # Best combined formats (video + audio in one file)
         for f in (info.get('formats') or []):
             vcodec = f.get('vcodec', 'none')
             acodec = f.get('acodec', 'none')
             res = f.get('height')
-            ext = f.get('ext', '')
             fmt_id = f.get('format_id', '')
 
             if vcodec != 'none' and acodec != 'none' and res:
                 label = f"MP4 · {res}p"
                 if label not in seen:
                     seen.add(label)
-                    formats.append({
-                        'label': label,
-                        'format_id': fmt_id,
-                        'type': 'video'
-                    })
+                    formats.append({'label': label, 'format_id': fmt_id, 'type': 'video'})
 
-        # Sort by resolution
         formats.sort(key=lambda x: int(x['label'].split('·')[1].strip().replace('p','')) if '·' in x['label'] else 0, reverse=True)
         formats = formats[:5]
 
-        # If no combined formats, use best merged format (ffmpeg merges audio+video)
         if not formats:
             formats = [
-                {'label': 'MP4 · Best Quality', 'format_id': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best', 'type': 'video'},
-                {'label': 'MP4 · 1080p', 'format_id': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]', 'type': 'video'},
-                {'label': 'MP4 · 720p', 'format_id': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]', 'type': 'video'},
-                {'label': 'MP4 · 480p', 'format_id': 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]', 'type': 'video'},
+                {'label': 'MP4 · 1080p', 'format_id': 'bestvideo[height<=1080]+bestaudio/best[height<=1080]', 'type': 'video'},
+                {'label': 'MP4 · 720p',  'format_id': 'bestvideo[height<=720]+bestaudio/best[height<=720]',   'type': 'video'},
+                {'label': 'MP4 · 480p',  'format_id': 'bestvideo[height<=480]+bestaudio/best[height<=480]',   'type': 'video'},
+                {'label': 'MP4 · Best',  'format_id': 'bestvideo+bestaudio/best',                             'type': 'video'},
             ]
 
-        # Audio formats
         audio_formats = [
             {'label': 'MP3 · High Quality (192kbps)', 'format_id': 'audio:bestaudio/best', 'type': 'audio'},
-            {'label': 'MP3 · Standard (128kbps)', 'format_id': 'audio:bestaudio[abr<=128]/worstaudio', 'type': 'audio'},
+            {'label': 'MP3 · Standard (128kbps)',     'format_id': 'audio:bestaudio[abr<=128]/worstaudio',    'type': 'audio'},
         ]
 
         return jsonify({
@@ -111,13 +116,11 @@ def download_video():
 
     is_audio = format_id.startswith('audio:')
     actual_fmt = format_id.replace('audio:', '') if is_audio else format_id
-
     output_tmpl = os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s')
 
     base_opts = {
+        **YDL_BASE,
         'outtmpl': output_tmpl,
-        'quiet': True,
-        'no_warnings': True,
     }
     if FFMPEG_PATH:
         base_opts['ffmpeg_location'] = os.path.dirname(FFMPEG_PATH)
@@ -136,21 +139,16 @@ def download_video():
         else:
             ydl_opts = {**base_opts, 'format': actual_fmt}
     else:
-        # Always merge best video + best audio
         if FFMPEG_PATH:
             ydl_opts = {
                 **base_opts,
-                'format': actual_fmt if '+' in actual_fmt else f'{actual_fmt}+bestaudio/best',
+                'format': actual_fmt if '+' in actual_fmt else f'bestvideo[height<=1080]+bestaudio/best',
                 'merge_output_format': 'mp4',
-                'postprocessors': [{
-                    'key': 'FFmpegVideoConvertor',
-                    'preferedformat': 'mp4',
-                }],
             }
         else:
             ydl_opts = {
                 **base_opts,
-                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                'format': 'best[ext=mp4]/best',
             }
 
     try:
@@ -169,7 +167,6 @@ def download_video():
                 if os.path.exists(candidate):
                     return send_file(candidate, as_attachment=True, download_name=f"{title}{ext}")
         else:
-            # Check for merged mp4 first
             mp4 = os.path.splitext(filename)[0] + '.mp4'
             if os.path.exists(mp4):
                 return send_file(mp4, as_attachment=True, download_name=f"{title}.mp4")
